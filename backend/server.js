@@ -3,82 +3,121 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+require("dotenv").config();
 
 const app = express();
-app.use(cors());
+
+// ---------- MIDDLEWARE ----------
+app.use(
+  cors({
+    origin: "https://laxmipatibala.github.io",
+    credentials: true,
+  })
+);
 app.use(express.json());
 
-// JWT secret key
-const SECRET = "mysecretkey";
+// ---------- ENV VARIABLES ----------
+const PORT = process.env.PORT || 5000;
+const JWT_SECRET = process.env.JWT_SECRET;
+const MONGO_URI = process.env.MONGO_URI;
 
-// Connect to MongoDB
+// ---------- MONGODB CONNECTION ----------
 mongoose
-  .connect("mongodb://127.0.0.1:27017/loginDemo")
+  .connect(MONGO_URI)
   .then(() => console.log("MongoDB connected"))
-  .catch(err => console.log(err));
+  .catch((err) => console.error("MongoDB error:", err));
 
-// User model
+// ---------- USER MODEL ----------
 const User = mongoose.model(
   "User",
   new mongoose.Schema({
-    name: String,
-    email: String,
-    password: String,
+    name: { type: String, required: true },
+    email: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
   })
 );
 
-// SIGNUP ROUTE
+// ---------- SIGNUP ----------
 app.post("/signup", async (req, res) => {
-  const { name, email, password } = req.body;
+  try {
+    const { name, email, password } = req.body;
 
-  const hashed = await bcrypt.hash(password, 10);
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
 
-  await User.create({ name, email, password: hashed });
+    const existing = await User.findOne({ email });
+    if (existing) {
+      return res.status(409).json({ message: "User already exists" });
+    }
 
-  res.json({ message: "Signup successful" });
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    await User.create({
+      name,
+      email,
+      password: hashedPassword,
+    });
+
+    res.status(201).json({ message: "Signup successful" });
+  } catch (err) {
+    res.status(500).json({ message: "Signup failed" });
+  }
 });
 
-// LOGIN ROUTE (JWT)
+// ---------- LOGIN ----------
 app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
+  try {
+    const { email, password } = req.body;
 
-  const user = await User.findOne({ email });
-  if (!user) return res.json({ message: "User not found" });
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
-  const match = await bcrypt.compare(password, user.password);
-  if (!match) return res.json({ message: "Wrong password" });
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
-  // Generate JWT token
-  const token = jwt.sign(
-    { id: user._id, email: user.email },
-    SECRET,
-    { expiresIn: "7d" }
-  );
+    const token = jwt.sign(
+      { id: user._id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
 
-  res.json({ message: "Login successful", token });
+    res.json({ token });
+  } catch {
+    res.status(500).json({ message: "Login failed" });
+  }
 });
 
-// JWT middleware
-function verifyToken(req, res, next) {
-  const token = req.headers.authorization;
+// ---------- JWT MIDDLEWARE ----------
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers.authorization;
 
-  if (!token) return res.status(401).json({ message: "No token provided" });
+  if (!authHeader) {
+    return res.status(401).json({ message: "No token provided" });
+  }
 
-  jwt.verify(token, SECRET, (err, decoded) => {
-    if (err) return res.status(401).json({ message: "Invalid token" });
+  const token = authHeader.split(" ")[1]; // Bearer <token>
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(401).json({ message: "Invalid token" });
+    }
 
     req.user = decoded;
     next();
   });
 }
 
-// PROTECTED ROUTE
-app.get("/dashboard-data", verifyToken, (req, res) => {
-  res.json({
-    message: "Access granted. Welcome to Dashboard!",
-    user: req.user,
-  });
+// ---------- VERIFY TOKEN (USED BY FRONTEND) ----------
+app.get("/verify", authenticateToken, (req, res) => {
+  res.json({ valid: true, user: req.user });
 });
 
-// Start server
-app.listen(5000, () => console.log("Server running on port 5000"));
+// ---------- START SERVER ----------
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
